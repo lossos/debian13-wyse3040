@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Check for required commands
+if ! command -v wget &> /dev/null; then
+    echo "Error: 'wget' is not installed. Please add it to your build environment (e.g., Dockerfile)." >&2
+    exit 1
+fi
+
 # ------------------------------------------------------------------
 # Deb-conf variables that match the preseed
 # ------------------------------------------------------------------
@@ -23,6 +29,47 @@ rm -rf "${WORK_DIR}" "${REMASTER}"
 mkdir -p "${WORK_DIR}" "${REMASTER}"
 
 xorriso -osirrox on -indev "${ORIG_ISO}" -extract / "${WORK_DIR}"
+
+# ------------------------------------------------------------------
+# 2.5. Add custom udeb packages for F2FS support in the installer
+# ------------------------------------------------------------------
+echo "Adding custom F2FS udeb packages to the ISO..."
+UDEB_TMP="/tmp/udebs"
+rm -rf "${UDEB_TMP}"
+mkdir -p "${UDEB_TMP}"
+cd "${UDEB_TMP}" || { echo "Error: Failed to change directory to ${UDEB_TMP}"; exit 1; }
+
+F2FS_TOOLS_UDEB_URL="http://ftp.debian.org/debian/pool/main/f/f2fs-tools/f2fs-tools-udeb_1.16.0-2_amd64.udeb"
+# The kernel version for the installer might change. This is for the 13.1.0 netinst.
+F2FS_MODULES_UDEB_URL="http://ftp.debian.org/debian/pool/main/l/linux-signed-amd64/f2fs-modules-6.12.43+deb13-amd64-di_6.12.43-1_amd64.udeb"
+
+wget -q "${F2FS_TOOLS_UDEB_URL}" || { echo "Error: Failed to download f2fs-tools-udeb."; exit 1; }
+wget -q "${F2FS_MODULES_UDEB_URL}" || { echo "Error: Failed to download f2fs-modules-udeb."; exit 1; }
+
+# Create pool directories according to Debian archive structure
+mkdir -p "${WORK_DIR}/pool/main/f/f2fs-tools"
+mkdir -p "${WORK_DIR}/pool/main/l/linux-signed-amd64"
+
+# Copy udebs to the correct pool directory
+cp f2fs-tools-udeb_*.udeb "${WORK_DIR}/pool/main/f/f2fs-tools/"
+cp f2fs-modules-*.udeb "${WORK_DIR}/pool/main/l/linux-signed-amd64/"
+
+# Update the installer's package list to include the new udebs
+PACKAGES_GZ="${WORK_DIR}/dists/trixie/main/debian-installer/binary-amd64/Packages.gz"
+PACKAGES_FILE="${WORK_DIR}/dists/trixie/main/debian-installer/binary-amd64/Packages"
+
+gunzip -c "${PACKAGES_GZ}" > "${PACKAGES_FILE}"
+
+# Extract control info for f2fs-tools-udeb and patch the dependency
+echo "" >> "${PACKAGES_FILE}"
+dpkg-deb -I f2fs-tools-udeb_*.udeb control >> "${PACKAGES_FILE}"
+echo "" >> "${PACKAGES_FILE}"
+dpkg-deb -I f2fs-modules-*.udeb control >> "${PACKAGES_FILE}"
+gzip -9c "${PACKAGES_FILE}" > "${PACKAGES_GZ}"
+rm "${PACKAGES_FILE}"
+
+cd /build # Go back to the original build directory
+rm -rf "${UDEB_TMP}"
 
 # ------------------------------------------------------------------
 # 3. Copy preseed.cfg into initrd
